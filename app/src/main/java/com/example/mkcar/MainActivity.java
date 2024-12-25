@@ -1,281 +1,160 @@
 package com.example.mkcar;
 
 import android.Manifest;
-import android.annotation.SuppressLint;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothSocket;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
-import android.os.SystemClock;
 import android.util.Log;
-import android.view.MotionEvent;
 import android.view.View;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.ListView;
 import android.widget.TextView;
+import android.widget.Toast;
 
-import androidx.annotation.RequiresApi;
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.lang.reflect.Method;
 import java.util.Set;
 import java.util.UUID;
 
-import io.reactivex.Observable;
-import io.reactivex.android.schedulers.AndroidSchedulers;
-import io.reactivex.schedulers.Schedulers;
+public class MainActivity extends AppCompatActivity implements JoystickView.JoystickListener{
 
-public class MainActivity extends AppCompatActivity implements JoystickView.JoystickListener {
+    private final String TAG = MainActivity.class.getSimpleName();
 
-    // Global variables
+    private static final UUID BT_MODULE_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB"); // "random" unique identifier
+
+    // #defines for identifying shared types between calling functions
+    private final static int REQUEST_ENABLE_BT = 1; // used to identify adding bluetooth names
+    public final static int MESSAGE_READ = 2; // used in bluetooth handler to identify message update
+    private final static int CONNECTING_STATUS = 3; // used in bluetooth handler to identify message status
+
+    // GUI Components
+    private TextView mBluetoothStatus;
+    private TextView coordinatesText;
+
+    private BluetoothAdapter mBTAdapter;
+    private ArrayAdapter<String> mBTArrayAdapter;
+
+    private Handler mHandler; // Our main handler that will receive callback notifications
+    private ConnectedThread mConnectedThread; // bluetooth background worker thread to send and receive data
+    private BluetoothSocket mBTSocket = null; // bi-directional client-to-client data path
+
     private boolean isLeftSignalOn = false;
     private boolean isRightSignalOn = false;
     private boolean isHeadlightsOn = false;
     private boolean isEmergencyOn = false;
     private boolean isHornOn = false;
 
-    private TextView coordinatesText;
-    private TextView pressedButtonsText;
-    private static final int REQUEST_ENABLE_BT = 1;
-
-    //We will use a Handler to get the BT Connection status
-    public static Handler handler;
-    BluetoothDevice arduinoBTModule = null;
-    UUID arduinoUUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB"); // default uuid
-
-    private OutputStream outputStream; // For Bluetooth communication
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        JoystickView joystickView = findViewById(R.id.joystickView);
+        mBluetoothStatus =  findViewById(R.id.bluetooth_status);
+        Button mScanBtn = findViewById(R.id.scan);
+        Button mOffBtn = findViewById(R.id.off);
+        Button mDiscoverBtn = findViewById(R.id.discover);
+        Button mListPairedDevicesBtn = findViewById(R.id.paired_btn);
+        CheckBox ledLeft = findViewById(R.id.checkbox_left);
+        CheckBox ledRight = findViewById(R.id.checkbox_right);
+        CheckBox ledHeadlights = findViewById(R.id.checkbox_headlights);
+        CheckBox ledEmergency = findViewById(R.id.checkbox_emergency);
+        CheckBox horn = findViewById(R.id.checkbox_horn);
         coordinatesText = findViewById(R.id.coordinatesText);
-        pressedButtonsText = findViewById(R.id.pressedButtonsText);
+
+        JoystickView joystickView = findViewById(R.id.joystickView);
         joystickView.setJoystickListener(this);
 
-        BluetoothManager bluetoothManager = getSystemService(BluetoothManager.class);
-        BluetoothAdapter bluetoothAdapter = bluetoothManager.getAdapter();
+        mBTArrayAdapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1);
+        mBTAdapter = BluetoothAdapter.getDefaultAdapter(); // get a handle on the bluetooth radio
 
-        TextView btDevices = findViewById(R.id.btDevices);
-        TextView btError = findViewById(R.id.btError);
-        Button connectToDevice = (Button) findViewById(R.id.connectToDevice);
-        Button searchDevices = (Button) findViewById(R.id.searchDevices);
-        Button clearValues = (Button) findViewById(R.id.refresh);
-        Button btnLeftSignal = findViewById(R.id.leftSignalButton);
-        Button btnHeadlights = findViewById(R.id.headlightsButton);
-        Button btnRightSignal = findViewById(R.id.rightSignalButton);
-        Button btnEmergency = findViewById(R.id.emergencySignalButton);
-        Button btnHorn = findViewById(R.id.hornButton);
+        ListView mDevicesListView = findViewById(R.id.devices_list_view);
+        mDevicesListView.setAdapter(mBTArrayAdapter); // assign model to view
+        mDevicesListView.setOnItemClickListener(mDeviceClickListener);
 
-        // Set up button listeners
-        btnLeftSignal.setOnClickListener(v -> {
-            isLeftSignalOn = !isLeftSignalOn;
-            isRightSignalOn = false;
-            updatePressedButtons();
-        });
-        btnHeadlights.setOnClickListener(v -> {
-            isHeadlightsOn = !isHeadlightsOn;
-            updatePressedButtons();
-        });
-        btnRightSignal.setOnClickListener(v -> {
-            isRightSignalOn = !isRightSignalOn;
-            isLeftSignalOn = false;
-            updatePressedButtons();
-        });
-        btnEmergency.setOnClickListener(v -> {
-            isEmergencyOn = !isEmergencyOn;
-            updatePressedButtons();
-        });
-        btnHorn.setOnTouchListener((v, event) -> {
-            if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                isHornOn = true;
-                updatePressedButtons();
-            }
-            if (event.getAction() == MotionEvent.ACTION_UP) {
-                isHornOn = false;
-                updatePressedButtons();
-            }
-            return true;
-        });
+        // Ask for location permission if not already allowed
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.ACCESS_COARSE_LOCATION}, 1);
 
-        // Using a handler to update the interface in case of an error connecting to the BT device
-        // My idea is to show handler vs RxAndroid
-        handler = new Handler(Looper.getMainLooper()) {
+
+        mHandler = new Handler(Looper.getMainLooper()) {
             @Override
-            public void handleMessage(Message msg) {
-                switch (msg.what) {
-                    case 0: // Error
-                        String arduinoMsg = msg.obj.toString(); // Read message from Arduino
-                        break;
+            public void handleMessage(@NonNull Message msg) {
+
+                if (msg.what == CONNECTING_STATUS) {
+                    if (msg.arg1 == 1)
+                        mBluetoothStatus.setText("Bluetooth включен" + msg.obj);
+                    else
+                        mBluetoothStatus.setText("Bluetooth не удалось подключить");
                 }
             }
         };
 
-        // Set a listener event on a button to clear the texts
-        clearValues.setOnClickListener(view -> btDevices.setText(""));
+        if (mBTArrayAdapter == null) {
+            // Device does not support Bluetooth
+            mBluetoothStatus.setText("Bluetooth не поддерживается");
+            Toast.makeText(getApplicationContext(), "Bluetooth устройство не найдено", Toast.LENGTH_SHORT).show();
+        } else {
+
+            ledLeft.setOnClickListener(v -> {
+                isLeftSignalOn = !isLeftSignalOn;
+                isRightSignalOn = false;
+                if (mConnectedThread != null) //First check to make sure thread created
+                    if (isLeftSignalOn) mConnectedThread.write("LEFT:1");
+                    else mConnectedThread.write("LEFT:0");
+            });
+
+            ledRight.setOnClickListener(v -> {
+                isRightSignalOn = !isRightSignalOn;
+                isLeftSignalOn = false;
+                if (mConnectedThread != null) //First check to make sure thread created
+                    if (isRightSignalOn) mConnectedThread.write("RGHT:1");
+                    else mConnectedThread.write("RGHT:0");
+            });
+
+            ledHeadlights.setOnClickListener(v -> {
+                isHeadlightsOn = !isHeadlightsOn;
+                if (mConnectedThread != null) //First check to make sure thread created
+                    if (isHeadlightsOn) mConnectedThread.write("HEAD:1");
+                    else mConnectedThread.write("HEAD:0");
+            });
+
+            ledEmergency.setOnClickListener(v -> {
+                isEmergencyOn = !isEmergencyOn;
+                if (mConnectedThread != null) //First check to make sure thread created
+                    if (isEmergencyOn) mConnectedThread.write("EMER:1");
+                    else mConnectedThread.write("EMER:0");
+            });
+
+            horn.setOnClickListener(v -> {
+                isHornOn = !isHornOn;
+                if (mConnectedThread != null) //First check to make sure thread created
+                    if (isHornOn) mConnectedThread.write("HORN:1");
+                    else mConnectedThread.write("HORN:0");
+            });
 
 
-        // Create an Observable from RxAndroid
-        // The code will be executed when an Observer subscribes to the the Observable
-        final Observable<String> connectToBTObservable = Observable.create(emitter -> {
-            //Call the constructor of the ConnectThread class
-            //Passing the Arguments: an Object that represents the BT device,
-            // the UUID and then the handler to update the UI
-            ConnectThread connectThread = new ConnectThread(arduinoBTModule, arduinoUUID, handler);
-            connectThread.run();
-            //Check if Socket connected
-            if (connectThread.getMmSocket().isConnected()) {
-                //The pass the Open socket as arguments to call the constructor of ConnectedThread
-                ConnectedThread connectedThread = new ConnectedThread(connectThread.getMmSocket());
-                connectedThread.run();
-                if(connectedThread.getValueRead()!=null)
-                {
-                    // If we have read a value from the Arduino
-                    // we call the onNext() function
-                    //This value will be observed by the observer
-                    emitter.onNext(connectedThread.getValueRead());
-                }
-                //We just want to stream 1 value, so we close the BT stream
-                connectedThread.cancel();
-            }
-            // SystemClock.sleep(5000); // simulate delay
-            //Then we close the socket connection
-            connectThread.cancel();
-            //We could Override the onComplete function
-            emitter.onComplete();
-
-        });
-
-        connectToDevice.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                if (arduinoBTModule != null) {
-                    //We subscribe to the observable until the onComplete() is called
-                    //We also define control the thread management with
-                    // subscribeOn:  the thread in which you want to execute the action
-                    // observeOn: the thread in which you want to get the response
-                    connectToBTObservable.
-                            observeOn(AndroidSchedulers.mainThread()).
-                            subscribeOn(Schedulers.io()).
-                            subscribe(valueRead -> {
-                                //valueRead returned by the onNext() from the Observable
-                                //We just scratched the surface with RxAndroid
-                            });
-
-                }
-            }
-        });
-
-        searchDevices.setOnClickListener(new View.OnClickListener() {
-            //Display all the linked BT Devices
-            @Override
-            public void onClick(View view) {
-                //Check if the phone supports BT
-                if (bluetoothAdapter == null) {
-                    // Device doesn't support Bluetooth
-                    btError.setText("Устройство не поддерживает Bluetooth.");
-                } else {
-                    //Check BT enabled. If disabled, we ask the user to enable BT
-                    if (!bluetoothAdapter.isEnabled()) {
-                        btError.setText("Bluetooth выключен.");
-                        Intent enableBtIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
-                        if (ActivityCompat.checkSelfPermission(getApplicationContext(), Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                            btError.setText("Нет разрешения на использование Bluetooth.");
-                            startActivityForResult(enableBtIntent, REQUEST_ENABLE_BT);
-                        }
-                    } else {
-                        btError.setText("");
-                    }
-                    String btDevicesString="";
-                    Set<BluetoothDevice> pairedDevices = bluetoothAdapter.getBondedDevices();
-
-                    if (pairedDevices.size() > 0) {
-                        // There are paired devices. Get the name and address of each paired device.
-                        for (BluetoothDevice device: pairedDevices) {
-                            String deviceName = device.getName();
-                            String deviceHardwareAddress = device.getAddress(); // MAC address
-                            //We append all devices to a String that we will display in the UI
-                            btDevicesString=btDevicesString+deviceName+" ["+deviceHardwareAddress+"]\n";
-                            //If we find the HC 05 device (the Arduino BT module)
-                            //We assign the device value to the Global variable BluetoothDevice
-                            //We enable the button "Connect to HC 05 device"
-                            if (deviceName.equals("HC-06")) {
-                                if (device.getUuids() != null && device.getUuids().length > 0) {
-                                    arduinoUUID = device.getUuids()[0].getUuid();
-                                    arduinoBTModule = device;
-                                    //HC-06 Found, enabling the button to read results
-                                    connectToDevice.setEnabled(true);
-                                    break;
-                                }
-                            }
-                            btDevices.setText(btDevicesString);
-                        }
-                    }
-                }
-            }
-        });
-        setupRxDataStream();
-    }
-
-    private void updatePressedButtons() {
-        StringBuilder pressedButtons = new StringBuilder("Нажато: ");
-
-        if (isLeftSignalOn) pressedButtons.append("Влево ");
-        if (isRightSignalOn) pressedButtons.append("Вправо ");
-        if (isHeadlightsOn) pressedButtons.append("Фары ");
-        if (isEmergencyOn) pressedButtons.append("Аварийка ");
-        if (isHornOn) pressedButtons.append("Гудок ");
-
-        pressedButtonsText.setText(pressedButtons.toString());
-    }
-
-    private void setupRxDataStream() {
-        Observable<String> joystickObservable = Observable.create(emitter -> {
-            JoystickView.JoystickListener joystickListener = (xPercent, yPercent, id) -> {
-                int x = (int) (xPercent * 100);
-                int y = (int) (yPercent * 100);
-                emitter.onNext("X:" + x + " Y:" + y);
-            };
-        });
-
-        Observable<String> buttonStateObservable = Observable.create(emitter -> {
-            while (true) {
-                String buttonState = "L:" + isLeftSignalOn + " R:" + isRightSignalOn +
-                        " H:" + isHeadlightsOn + " E:" + isEmergencyOn + " HO:" + isHornOn;
-                emitter.onNext(buttonState);
-                Thread.sleep(100); // Throttle the button state updates
-            }
-        });
-
-        // Combine joystick and button states
-        Observable.combineLatest(
-                        joystickObservable,
-                        buttonStateObservable,
-                        (joystickData, buttonData) -> joystickData + " " + buttonData
-                ).subscribeOn(Schedulers.io())
-                .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(this::sendDataToArduino);
-    }
-
-    private void sendDataToArduino(String data) {
-        if (outputStream != null) {
-            try {
-                outputStream.write((data + "\n").getBytes());
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
+            mScanBtn.setOnClickListener(v -> bluetoothOn());
+            mOffBtn.setOnClickListener(v -> bluetoothOff());
+            mListPairedDevicesBtn.setOnClickListener(v -> listPairedDevices());
+            mDiscoverBtn.setOnClickListener(v -> discover());
         }
     }
 
@@ -286,14 +165,173 @@ public class MainActivity extends AppCompatActivity implements JoystickView.Joys
         int y = (int) (yPercent * 100);
 
         coordinatesText.setText("X: " + x + " Y: " + y);
-
-        // Send these values to Arduino via Bluetooth
-        sendJoystickCoordinates(x, y);
+        if (mConnectedThread != null) mConnectedThread.write(coordinatesText.toString());
     }
 
-    private void sendJoystickCoordinates(int x, int y) {
-        String message = "X:" + x + " Y:" + y;
-        // Write this message to the Bluetooth output stream
-        //outputStream.write(message.getBytes());
+
+    private void bluetoothOn() {
+        if (!mBTAdapter.isEnabled()) {
+            Intent enableBtIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                return;
+            }
+            startActivityForResult(enableBtIntent, REQUEST_ENABLE_BT);
+            mBluetoothStatus.setText("Bluetooth включен");
+            Toast.makeText(getApplicationContext(), "Bluetooth включен", Toast.LENGTH_SHORT).show();
+
+        } else {
+            Toast.makeText(getApplicationContext(), "Bluetooth уже включен", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    // Enter here after user selects "yes" or "no" to enabling radio
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent Data) {
+        // Check which request we're responding to
+        super.onActivityResult(requestCode, resultCode, Data);
+        if (requestCode == REQUEST_ENABLE_BT) {
+            // Make sure the request was successful
+            if (resultCode == RESULT_OK) {
+                // The user picked a contact.
+                // The Intent's data Uri identifies which contact was selected.
+                mBluetoothStatus.setText("Bluetooth включен");
+            } else
+                mBluetoothStatus.setText("Bluetooth выключен");
+        }
+    }
+
+    private void bluetoothOff() {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        mBTAdapter.disable(); // turn off
+        mBluetoothStatus.setText("Bluetooth выключен");
+        Toast.makeText(getApplicationContext(), "Bluetooth turned Off", Toast.LENGTH_SHORT).show();
+    }
+
+    private void discover() {
+        // Check if the device is already discovering
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        if (mBTAdapter.isDiscovering()) {
+            mBTAdapter.cancelDiscovery();
+            Toast.makeText(getApplicationContext(), "Поиск остановлен", Toast.LENGTH_SHORT).show();
+        } else {
+            if (mBTAdapter.isEnabled()) {
+                mBTArrayAdapter.clear(); // clear items
+                mBTAdapter.startDiscovery();
+                Toast.makeText(getApplicationContext(), "Поиск начат", Toast.LENGTH_SHORT).show();
+                registerReceiver(blReceiver, new IntentFilter(BluetoothDevice.ACTION_FOUND));
+            } else {
+                Toast.makeText(getApplicationContext(), "Bluetooth не включен", Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    final BroadcastReceiver blReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            if (BluetoothDevice.ACTION_FOUND.equals(action)) {
+                BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                // add the name to the list
+                if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                    return;
+                }
+                assert device != null;
+                mBTArrayAdapter.add(device.getName() + "\n" + device.getAddress());
+                mBTArrayAdapter.notifyDataSetChanged();
+            }
+        }
+    };
+
+    private void listPairedDevices() {
+        mBTArrayAdapter.clear();
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        Set<BluetoothDevice> mPairedDevices = mBTAdapter.getBondedDevices();
+        if (mBTAdapter.isEnabled()) {
+            // put it's one to the adapter
+            for (BluetoothDevice device : mPairedDevices)
+                mBTArrayAdapter.add(device.getName() + "\n" + device.getAddress());
+
+            Toast.makeText(getApplicationContext(), "Показать связанные", Toast.LENGTH_SHORT).show();
+        } else
+            Toast.makeText(getApplicationContext(), "Bluetooth не включен", Toast.LENGTH_SHORT).show();
+    }
+
+    private final AdapterView.OnItemClickListener mDeviceClickListener = new AdapterView.OnItemClickListener() {
+        @Override
+        public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
+
+            if (!mBTAdapter.isEnabled()) {
+                Toast.makeText(getBaseContext(), "Bluetooth не включен", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            mBluetoothStatus.setText("Подключение...");
+            // Get the device MAC address, which is the last 17 chars in the View
+            String info = ((TextView) view).getText().toString();
+            final String address = info.substring(info.length() - 17);
+            final String name = info.substring(0, info.length() - 17);
+
+            // Spawn a new thread to avoid blocking the GUI one
+            new Thread() {
+                @Override
+                public void run() {
+                    boolean fail = false;
+
+                    BluetoothDevice device = mBTAdapter.getRemoteDevice(address);
+
+                    try {
+                        mBTSocket = createBluetoothSocket(device);
+                    } catch (IOException e) {
+                        fail = true;
+                        Toast.makeText(getBaseContext(), "Не удалось создать сокет", Toast.LENGTH_SHORT).show();
+                    }
+                    // Establish the Bluetooth socket connection.
+                    try {
+
+                        if (ActivityCompat.checkSelfPermission(getApplicationContext(), Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                            return;
+                        }
+                        mBTSocket.connect();
+                    } catch (IOException e) {
+                        try {
+                            fail = true;
+                            mBTSocket.close();
+                            mHandler.obtainMessage(CONNECTING_STATUS, -1, -1)
+                                    .sendToTarget();
+                        } catch (IOException e2) {
+                            //insert code to deal with this
+                            Toast.makeText(getBaseContext(), "Не удалось создать сокет", Toast.LENGTH_SHORT).show();
+                        }
+                    }
+                    if (!fail) {
+                        mConnectedThread = new ConnectedThread(mBTSocket, mHandler);
+                        mConnectedThread.start();
+
+                        mHandler.obtainMessage(CONNECTING_STATUS, 1, -1, name)
+                                .sendToTarget();
+                    }
+                }
+            }.start();
+        }
+    };
+
+    private BluetoothSocket createBluetoothSocket(BluetoothDevice device) throws IOException {
+        try {
+            final Method m = device.getClass().getMethod("createInsecureRfcommSocketToServiceRecord", UUID.class);
+            return (BluetoothSocket) m.invoke(device, BT_MODULE_UUID);
+        } catch (Exception e) {
+            Log.e(TAG, "Could not create Insecure RFComm Connection", e);
+        }
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            return  null;
+        }
+        return device.createRfcommSocketToServiceRecord(BT_MODULE_UUID);
     }
 }
+

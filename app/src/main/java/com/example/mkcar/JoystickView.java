@@ -60,7 +60,6 @@ public class JoystickView extends View {
         float maxDistance = outerCircleRadius;
 
         switch (event.getAction()) {
-            case MotionEvent.ACTION_DOWN:
             case MotionEvent.ACTION_MOVE:
                 if (distance < maxDistance) {
                     innerCircleX = event.getX();
