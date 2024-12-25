@@ -326,7 +326,7 @@ public class MainActivity extends AppCompatActivity implements JoystickView.Joys
             final Method m = device.getClass().getMethod("createInsecureRfcommSocketToServiceRecord", UUID.class);
             return (BluetoothSocket) m.invoke(device, BT_MODULE_UUID);
         } catch (Exception e) {
-            Log.e(TAG, "Could not create Insecure RFComm Connection", e);
+            Log.e(TAG, "Не удалось создать соединение RFComm", e);
         }
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
             return  null;
